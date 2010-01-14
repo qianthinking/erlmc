@@ -33,7 +33,7 @@
 %% api callbacks
 -export([get/1, get_many/1, add/2, add/3, set/2, set/3, 
 		 replace/2, replace/3, delete/1, increment/4, decrement/4,
-		 append/2, prepend/2, stats/0, stats/2, flush/0, flush/1, quit/0, 
+		 append/2, prepend/2, stats/0, stats/2, flush/0, flush/1, flush_progressive/1, quit/0, 
 		 version/0]).
 
 -include("erlmc.hrl").
@@ -156,6 +156,18 @@ flush() ->
     
 flush(Expiration) when is_integer(Expiration) ->
     multi_call({flush, Expiration}).
+
+flush_progressive(ExpirationStep) when is_integer(ExpirationStep) ->
+    {_, FlushResult} =
+        lists:foldl(
+          fun({{Host, Port}, _}, {Expiration, Results}) ->
+                  Pid = unique_connection(Host, Port),
+                  {Expiration + ExpirationStep,
+                   [{{Host, Port}, Expiration, gen_server:call(Pid, {flush, Expiration}, ?TIMEOUT)} | Results]}
+          end,
+          {0, []},
+          unique_connections()),
+    lists:reverse(FlushResult).
     
 quit() ->
 	[begin

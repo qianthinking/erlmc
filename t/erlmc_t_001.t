@@ -41,6 +41,7 @@ main(_) ->
 	    etap:is(erlmc:get_many(["One", "Two", "Two-and-a-half", "Three"]), [{"One",<<"A">>},{"Two",<<"B">>},{"Two-and-a-half",<<>>},{"Three",<<"C">>}], "get_many ok"),
 	    
 	    etap:is(erlmc:flush(0), [{{"localhost",11211},<<>>}], "flush ok"),
+        etap:is(erlmc:flush_progressive(0), [{{"localhost",11211},0,<<>>}], "flush progressive ok"),
 	    
 	    ?etap_match(erlmc:stats(), [{{"localhost",11211}, [{_,_}|_]}], "stats/0 ok"),
         ?etap_match(erlmc:stats("localhost",11211), [{_,_}|_], "stats/2 ok"),
