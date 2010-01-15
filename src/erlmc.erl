@@ -31,8 +31,9 @@
          add_connection/2, remove_connection/2]).
 
 %% api callbacks
--export([get/1, get_many/1, add/2, add/3, set/2, set/3, 
-		 replace/2, replace/3, delete/1, increment/4, decrement/4,
+-export([get/1, get_many/1, add/2, add/3, set/2, set/3,
+		 replace/2, replace/3, check_and_replace/3, check_and_replace/4,
+                 delete/1, increment/4, decrement/4,
 		 append/2, prepend/2, stats/0, stats/2, flush/0, flush/1, flush_progressive/1, quit/0, 
 		 version/0]).
 
@@ -117,7 +118,7 @@ set(Key, Value) ->
 set(Key0, Value, Expiration) when is_binary(Value), is_integer(Expiration) ->
 	Key = package_key(Key0),
     gen_server:call(map_key(Key), {set, Key, Value, Expiration}, ?TIMEOUT).
-    
+
 replace(Key, Value) ->
 	replace(Key, Value, 0).
 	
@@ -125,6 +126,13 @@ replace(Key0, Value, Expiration) when is_binary(Value), is_integer(Expiration) -
 	Key = package_key(Key0),
     gen_server:call(map_key(Key), {replace, Key, Value, Expiration}, ?TIMEOUT).
     
+check_and_replace(Key, OldValue, NewValue) ->
+	check_and_replace(Key, OldValue, NewValue, 0).
+
+check_and_replace(Key0, OldValue, NewValue, Expiration) when is_binary(OldValue), is_binary(NewValue), is_integer(Expiration) ->
+	Key = package_key(Key0),
+    gen_server:call(map_key(Key), {check_and_replace, Key, OldValue, NewValue, Expiration}, ?TIMEOUT).
+
 delete(Key0) ->
 	Key = package_key(Key0),
     gen_server:call(map_key(Key), {delete, Key}, ?TIMEOUT).

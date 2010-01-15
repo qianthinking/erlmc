@@ -86,6 +86,18 @@ handle_call({replace, Key, Value, Expiration}, _From, Socket) ->
     Resp = send_recv(Socket, #request{op_code=?OP_Replace, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}),
     {reply, Resp#response.value, Socket};
 
+handle_call({check_and_replace, Key, OldValue, NewValue, Expiration}, _From, Socket) ->
+    BinKey = list_to_binary(Key),
+    case send_recv(Socket, #request{op_code=?OP_GetK, key=BinKey}) of
+        #response{key=BinKey, value=OldValue, status=0, cas=CAS} ->
+            Req = #request{op_code=?OP_Replace, extras = <<16#deadbeef:32, Expiration:32>>,
+                           key=BinKey, value=NewValue, cas=CAS},
+            Resp = send_recv(Socket, Req),
+            {reply, (Resp#response.status =:= 0), Socket};
+        _ ->
+            {reply, false, Socket}
+    end;
+
 handle_call({delete, Key}, _From, Socket) ->
     Resp = send_recv(Socket, #request{op_code=?OP_Delete, key=list_to_binary(Key)}),
     {reply, Resp#response.value, Socket};
