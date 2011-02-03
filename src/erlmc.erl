@@ -298,12 +298,12 @@ unique_connections() ->
 		end, dict:new(), ets:tab2list(erlmc_connections))).
 
 unique_connection(Host, Port) ->
-    case ets:lookup(erlmc_connections, {Host, Port}) of
-        [] -> exit({erlmc, {connection_not_found, {Host, Port}}});
-        Pids ->
-            {_, Pid} = lists:nth(random:uniform(length(Pids)), Pids),
-            Pid
-    end.
+  case ets:lookup(erlmc_connections, {Host, Port}) of
+    [] -> exit({erlmc, {connection_not_found, {Host, Port}}});
+    Pids ->
+      {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], random:uniform(length(Pids))),
+      Pid
+  end.
 
 %% Consistent hashing functions
 %%
