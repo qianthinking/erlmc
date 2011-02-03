@@ -319,27 +319,18 @@ hash_to_uint(Key) when is_list(Key) ->
 %%		 Key = string()
 %%		 Conn = pid()
 map_key(Key) when is_list(Key) ->
-	First = ets:first(erlmc_continuum),
     {Host, Port} = 
-		case find_next_largest(hash_to_uint(Key), First) of
-			undefined ->
-				case First of
-					'$end_of_table' -> exit(erlmc_continuum_empty);
-					_ ->
-						[{_, Value}] = ets:lookup(erlmc_continuum, First),
-						Value
-				end;
-			Value -> Value
+		case find_next_largest(hash_to_uint(Key)) of
+	    '$end_of_table' -> exit(erlmc_continuum_empty);
+			KeyIndex ->
+			  [{_, Value}] = ets:lookup(erlmc_continuum, KeyIndex),
+				Value
 		end,
 	unique_connection(Host, Port).
     
-%% @todo: use sorting algorithm to find next largest
-find_next_largest(_, '$end_of_table') -> 
-	undefined;
+find_next_largest(Hash) -> 
+	case ets:select(erlmc_continuum, [{{'$1','_'},[{'>', '$1', Hash}],['$1']}], 1) of
+    '$end_of_table' -> ets:first(erlmc_continuum);
+    {[Key], _} -> Key
+  end.
 
-find_next_largest(Int, Key) when Key > Int ->
-	[{_, Val}] = ets:lookup(erlmc_continuum, Key),
-	Val;
-	
-find_next_largest(Int, Key) ->
-	find_next_largest(Int, ets:next(erlmc_continuum, Key)).
