@@ -68,16 +68,26 @@ init([Host, Port]) ->
 %% @hidden
 %%--------------------------------------------------------------------    
 handle_call({get, Key}, _From, Socket) ->
-    case send_recv(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}) of
-		{error, Err} ->
-			{stop, Err, {error, Err}, Socket};
-		#response{key=Key1, value=Value} ->
-    		case binary_to_list(Key1) of
-		        Key -> {reply, Value, Socket};
-		        _ -> {reply, <<>>, Socket}
-		    end
+  case send_recv(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}) of
+    {error, Err} ->
+      {stop, Err, {error, Err}, Socket};
+    #response{key=Key1, value=Value} ->
+      case binary_to_list(Key1) of
+        Key -> {reply, Value, Socket};
+        _ -> {reply, <<>>, Socket}
+      end
 	end;
     
+handle_call({get_many, Keys}, _From, Socket) ->
+  [send(Socket, #request{op_code=?OP_GetKQ, key=list_to_binary(Key)}) || Key <- Keys], 
+  send(Socket, #request{op_code=?OP_Noop}),
+
+  case read_pipelined(Socket, ?OP_Noop, []) of
+    {error, Err} -> {stop, Err, {error, Err}, Socket};
+    Resp -> 
+      {reply, Resp, Socket}
+	end;
+
 handle_call({add, Key, Value, Expiration}, _From, Socket) ->
     case send_recv(Socket, #request{op_code=?OP_Add, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}) of
 		{error, Err} ->
@@ -301,3 +311,11 @@ recv_bytes(Socket, NumBytes) ->
         {ok, Bin} -> Bin;
         Err -> Err
     end.
+
+read_pipelined(Socket, StopOp, Acc) ->
+  case recv(Socket) of
+    {error, Err} -> {error, Err};
+    #response{op_code = StopOp} -> lists:reverse(Acc);
+    #response{key=Key, value=Value} -> read_pipelined(Socket, StopOp, [{binary_to_list(Key), Value} | Acc])
+	end.
+  

@@ -90,18 +90,19 @@ get(Key0) ->
 
 get(Key0, Timeout) ->
 	Key = package_key(Key0),
-    call(map_key(Key), {get, Key}, Timeout).
+  call(map_key(Key), {get, Key}, Timeout).
 
 get_many(Keys) ->
 	Self = self(),
+  SplitKeys = split_keys(Keys),
 	Pids = [spawn(fun() -> 
-		Res = (catch ?MODULE:get(Key)),
-		Self ! {self(), {Key, Res}}
-	 end) || Key <- Keys],
-	lists:reverse(lists:foldl(
+		Res = (catch call(unique_connection(Host, Port), {get_many, SubKeys}, ?TIMEOUT)),
+		Self ! {self(), Res}
+	 end) || {{Host, Port}, SubKeys} <- SplitKeys],
+	lists:append(lists:foldl(
 		fun(Pid, Acc) ->
 			receive
-				{Pid, {Key, Res}} -> [{Key, Res}|Acc]
+				{Pid, Res} -> [Res | Acc]
 			after ?TIMEOUT ->
 				Acc
 			end
@@ -328,9 +329,25 @@ map_key(Key) when is_list(Key) ->
 		end,
 	unique_connection(Host, Port).
     
+map_key_host(Key) when is_list(Key) ->
+  case find_next_largest(hash_to_uint(Key)) of
+    '$end_of_table' -> exit(erlmc_continuum_empty);
+    KeyIndex ->
+      [{_, Value}] = ets:lookup(erlmc_continuum, KeyIndex),
+      Value
+  end.
+    
 find_next_largest(Hash) -> 
 	case ets:select(erlmc_continuum, [{{'$1','_'},[{'>', '$1', Hash}],['$1']}], 1) of
     '$end_of_table' -> ets:first(erlmc_continuum);
     {[Key], _} -> Key
   end.
+
+split_keys(KeyList) -> split_keys(KeyList, []).
+split_keys([], SplitKeys) -> 
+  HKeys = proplists:get_keys(SplitKeys),
+  [{HKey, proplists:get_all_values(HKey, SplitKeys)} || HKey <- HKeys];
+split_keys([Key0|Rest], SplitKeys) -> 
+  Key = package_key(Key0),
+  split_keys(Rest, [{map_key_host(Key), Key} | SplitKeys]).
 
