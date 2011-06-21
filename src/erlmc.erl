@@ -302,7 +302,8 @@ unique_connection(Host, Port) ->
   case ets:lookup(erlmc_connections, {Host, Port}) of
     [] -> exit({erlmc, {connection_not_found, {Host, Port}}});
     Pids ->
-      {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], random:uniform(length(Pids))),
+      TRand = crypto:rand_uniform(1, length(Pids)),
+      {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand),
       Pid
   end.
 
