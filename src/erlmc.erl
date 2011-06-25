@@ -96,9 +96,9 @@ get_many(Keys) ->
 	Self = self(),
   SplitKeys = split_keys(Keys),
 	Pids = [spawn(fun() -> 
-		Res = (catch call(unique_connection(Host, Port), {get_many, SubKeys}, ?TIMEOUT)),
+		Res = (catch call(unique_connection(Host, Port, NC), {get_many, SubKeys}, ?TIMEOUT)),
 		Self ! {self(), Res}
-	 end) || {{Host, Port}, SubKeys} <- SplitKeys],
+	 end) || {{{Host, Port}, NC}, SubKeys} <- SplitKeys],
 	lists:append(lists:foldl(
 		fun(Pid, Acc) ->
 			receive
@@ -212,18 +212,18 @@ loop() ->
 	receive
 		{add_server, Host, Port, ConnPoolSize} ->
 			add_server_to_continuum(Host, Port),
-            [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize)];
-        {refresh_server, Host, Port, ConnPoolSize} ->
-            % adding to continuum is idempotent
-            add_server_to_continuum(Host, Port),
-            % add only necessary connections to reach pool size
-            LiveConnections = revalidate_connections(Host, Port),
-            if
-                LiveConnections < ConnPoolSize ->
-                    [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize - LiveConnections)];
-                true ->
-                    ok
-            end;
+      revalidate_connections(Host, Port),
+      [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize)];
+    {refresh_server, Host, Port, ConnPoolSize} ->
+      % adding to continuum is idempotent
+      add_server_to_continuum(Host, Port),
+      % add only necessary connections to reach pool size
+      LiveConnections = revalidate_connections(Host, Port),
+      if LiveConnections < ConnPoolSize ->
+         [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize - LiveConnections)];
+      true ->
+         ok
+      end;
 		{remove_server, Host, Port} ->
 			[(catch gen_server:call(Pid, quit, ?TIMEOUT)) || [Pid] <- ets:match(erlmc_connections, {{Host, Port}, '$1'})],
 			remove_server_from_continuum(Host, Port);
@@ -238,6 +238,7 @@ loop() ->
 			case ets:match(erlmc_connections, {'$1', Pid}) of
 				[[{Host, Port}]] -> 
 					ets:delete_object(erlmc_connections, {{Host, Port}, Pid}),
+          update_connections_for_server(Host, Port, {3, -1, 0, 0}),
 					case Err of
 						shutdown -> ok;
 						_ -> start_connection(Host, Port)
@@ -250,22 +251,43 @@ loop() ->
 	
 start_connection(Host, Port) ->
 	case erlmc_conn:start_link([Host, Port]) of
-		{ok, Pid} -> ets:insert(erlmc_connections, {{Host, Port}, Pid});
+		{ok, Pid} -> 
+      ets:insert(erlmc_connections, {{Host, Port}, Pid}),
+      update_connections_for_server(Host, Port, {3, 1});
 		_ -> ok
 	end.
 
 revalidate_connections(Host, Port) ->
     [(catch gen_server:call(Pid, version, ?TIMEOUT)) || [Pid] <- ets:match(erlmc_connections, {{Host, Port}, '$1'})],
-    length(ets:match(erlmc_connections, {{Host, Port}, '$1'})).
+    LiveConnections = length(ets:match(erlmc_connections, {{Host, Port}, '$1'})),
+    set_connections_for_server(Host, Port, LiveConnections),
+    LiveConnections.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 add_server_to_continuum(Host, Port) ->
-	[ets:insert(erlmc_continuum, {hash_to_uint(Host ++ integer_to_list(Port) ++ integer_to_list(I)), {Host, Port}}) || I <- lists:seq(1, 100)].
+	[ets:insert(erlmc_continuum, {hash_to_uint(Host ++ integer_to_list(Port) ++ integer_to_list(I)), {Host, Port}, 0}) || 
+    I <- lists:seq(1, 100)].
+
+update_connections_for_server(Host, Port, UpdateOpr) ->
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
+		[] -> 
+			ok;
+		List ->
+			[ets:update_counter(erlmc_continuum, Key, UpdateOpr) || [Key] <- List]
+	end.
+
+set_connections_for_server(Host, Port, Val) ->
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
+		[] -> 
+			ok;
+		List ->
+			[ets:update_element(erlmc_continuum, Key, {3, Val}) || [Key] <- List]
+	end.
 
 remove_server_from_continuum(Host, Port) ->
-	case ets:match(erlmc_continuum, {'$1', {Host, Port}}) of
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
 		[] -> 
 			ok;
 		List ->
@@ -273,7 +295,7 @@ remove_server_from_continuum(Host, Port) ->
 	end.
 
 is_server_in_continuum(Host, Port) ->
-    case ets:match(erlmc_continuum, {'$1', {Host, Port}}) of
+    case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
         [] -> 
             false;
         _ ->
@@ -302,10 +324,12 @@ unique_connection(Host, Port) ->
   case ets:lookup(erlmc_connections, {Host, Port}) of
     [] -> exit({erlmc, {connection_not_found, {Host, Port}}});
     Pids ->
-      TRand = crypto:rand_uniform(1, length(Pids)),
-      {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand),
-      Pid
+      unique_connection(Host, Port, length(Pids))
   end.
+unique_connection(Host, Port, RandBase) ->
+  TRand = crypto:rand_uniform(1, RandBase),
+  {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand),
+  Pid.
 
 %% Consistent hashing functions
 %%
@@ -321,25 +345,25 @@ hash_to_uint(Key) when is_list(Key) ->
 %%		 Key = string()
 %%		 Conn = pid()
 map_key(Key) when is_list(Key) ->
-    {Host, Port} = 
+    {{Host, Port}, NumConnections} = 
 		case find_next_largest(hash_to_uint(Key)) of
 	    '$end_of_table' -> exit(erlmc_continuum_empty);
 			KeyIndex ->
-			  [{_, Value}] = ets:lookup(erlmc_continuum, KeyIndex),
-				Value
+			  [{_, Value, NC}] = ets:lookup(erlmc_continuum, KeyIndex),
+				{Value, NC}
 		end,
-	unique_connection(Host, Port).
+	unique_connection(Host, Port, NumConnections).
     
 map_key_host(Key) when is_list(Key) ->
   case find_next_largest(hash_to_uint(Key)) of
     '$end_of_table' -> exit(erlmc_continuum_empty);
     KeyIndex ->
-      [{_, Value}] = ets:lookup(erlmc_continuum, KeyIndex),
-      Value
+      [{_, Value, NC}] = ets:lookup(erlmc_continuum, KeyIndex),
+      {Value, NC}
   end.
     
 find_next_largest(Hash) -> 
-	case ets:select(erlmc_continuum, [{{'$1','_'},[{'>', '$1', Hash}],['$1']}], 1) of
+	case ets:select(erlmc_continuum, [{{'$1','_','_'},[{'>', '$1', Hash}],['$1']}], 1) of
     '$end_of_table' -> ets:first(erlmc_continuum);
     {[Key], _} -> Key
   end.
