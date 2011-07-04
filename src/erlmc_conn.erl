@@ -68,23 +68,49 @@ init([Host, Port]) ->
 %% @hidden
 %%--------------------------------------------------------------------    
 handle_call({get, Key}, _From, Socket) ->
-    #response{key=Key1, value=Value} = send_recv(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}),
-    case binary_to_list(Key1) of
+  case send_recv(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}) of
+    {error, Err} ->
+      {stop, Err, {error, Err}, Socket};
+    #response{key=Key1, value=Value} ->
+      case binary_to_list(Key1) of
         Key -> {reply, Value, Socket};
         _ -> {reply, <<>>, Socket}
-    end;
+      end
+	end;
     
+handle_call({get_many, Keys}, _From, Socket) ->
+  [send(Socket, #request{op_code=?OP_GetKQ, key=list_to_binary(Key)}) || Key <- Keys], 
+  send(Socket, #request{op_code=?OP_Noop}),
+
+  case read_pipelined(Socket, ?OP_Noop, []) of
+    {error, Err} -> {stop, Err, {error, Err}, Socket};
+    Resp -> 
+      {reply, Resp, Socket}
+	end;
+
 handle_call({add, Key, Value, Expiration}, _From, Socket) ->
-    Resp = send_recv(Socket, #request{op_code=?OP_Add, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}),
-    {reply, Resp#response.value, Socket};
+    case send_recv(Socket, #request{op_code=?OP_Add, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
     
 handle_call({set, Key, Value, Expiration}, _From, Socket) ->
-    Resp = send_recv(Socket, #request{op_code=?OP_Set, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Set, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 
 handle_call({replace, Key, Value, Expiration}, _From, Socket) ->
-    Resp = send_recv(Socket, #request{op_code=?OP_Replace, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Replace, extras = <<16#deadbeef:32, Expiration:32>>, key=list_to_binary(Key), value=Value}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 
 handle_call({check_and_replace, Key, OldValue, NewValue, Expiration}, _From, Socket) ->
     BinKey = list_to_binary(Key),
@@ -99,37 +125,69 @@ handle_call({check_and_replace, Key, OldValue, NewValue, Expiration}, _From, Soc
     end;
 
 handle_call({delete, Key}, _From, Socket) ->
-    Resp = send_recv(Socket, #request{op_code=?OP_Delete, key=list_to_binary(Key)}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Delete, key=list_to_binary(Key)}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 
 handle_call({increment, Key, Value, Initial, Expiration}, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Increment, extras = <<Value:64, Initial:64, Expiration:32>>, key=list_to_binary(Key)}),
-	{reply, Resp, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Increment, extras = <<Value:64, Initial:64, Expiration:32>>, key=list_to_binary(Key)}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 	
 handle_call({decrement, Key, Value, Initial, Expiration}, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Decrement, extras = <<Value:64, Initial:64, Expiration:32>>, key=list_to_binary(Key)}),
-	{reply, Resp, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Decrement, extras = <<Value:64, Initial:64, Expiration:32>>, key=list_to_binary(Key)}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 
 handle_call({append, Key, Value}, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Append, key=list_to_binary(Key), value=Value}),
-	{reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Append, key=list_to_binary(Key), value=Value}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 
 handle_call({prepend, Key, Value}, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Prepend, key=list_to_binary(Key), value=Value}),
-	{reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Prepend, key=list_to_binary(Key), value=Value}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 	
 handle_call(stats, _From, Socket) ->
 	send(Socket, #request{op_code=?OP_Stat}),
-    Reply = collect_stats_from_socket(Socket),
-    {reply, Reply, Socket};
+    case collect_stats_from_socket(Socket) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Reply ->
+    		{reply, Reply, Socket}
+	end;
 
 handle_call(flush, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Flush}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Flush}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
         
 handle_call({flush, Expiration}, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Flush, extras = <<Expiration:32>>}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Flush, extras = <<Expiration:32>>}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
     
 handle_call(quit, _From, Socket) ->
 	send_recv(Socket, #request{op_code=?OP_Quit}),
@@ -137,8 +195,12 @@ handle_call(quit, _From, Socket) ->
     {stop, shutdown, undefined};
     
 handle_call(version, _From, Socket) ->
-	Resp = send_recv(Socket, #request{op_code=?OP_Version}),
-    {reply, Resp#response.value, Socket};
+	case send_recv(Socket, #request{op_code=?OP_Version}) of
+		{error, Err} ->
+			{stop, Err, {error, Err}, Socket};
+		Resp ->
+    		{reply, Resp#response.value, Socket}
+	end;
 	
 handle_call(_, _From, Socket) -> {reply, {error, invalid_call}, Socket}.
 
@@ -189,6 +251,8 @@ collect_stats_from_socket(Socket) ->
     
 collect_stats_from_socket(Socket, Acc) ->
     case recv(Socket) of
+		{error, Err} -> 
+			{error, Err};
         #response{body_size=0} ->
             Acc;
         #response{key=Key, value=Value} ->
@@ -204,9 +268,12 @@ send(Socket, Request) ->
     gen_tcp:send(Socket, Bin).
 
 recv(Socket) ->
-    Resp1 = recv_header(Socket),
-    Resp2 = recv_body(Socket, Resp1),
-    Resp2.
+    case recv_header(Socket) of
+		{error, Err} ->
+			{error, Err};
+		HdrResp ->
+    		recv_body(Socket, HdrResp)
+    end.
         
 encode_request(Request) when is_record(Request, request) ->
     Magic = 16#80,
@@ -228,6 +295,7 @@ recv_header(Socket) ->
 recv_body(Socket, #response{key_size = KeySize, extras_size = ExtrasSize, body_size = BodySize}=Resp) ->
     decode_response_body(recv_bytes(Socket, BodySize), ExtrasSize, KeySize, Resp).
     
+decode_response_header({error, Err}) -> {error, Err};
 decode_response_header(<<16#81:8, Opcode:8, KeySize:16, ExtrasSize:8, DataType:8, Status:16, BodySize:32, Opaque:32, CAS:64>>) ->
     #response{
         op_code = Opcode, 
@@ -240,6 +308,7 @@ decode_response_header(<<16#81:8, Opcode:8, KeySize:16, ExtrasSize:8, DataType:8
         body_size = BodySize
     }.
     
+decode_response_body({error, Err}, _, _, _) -> {error, Err};
 decode_response_body(Bin, ExtrasSize, KeySize, Resp) ->
     <<Extras:ExtrasSize/binary, Key:KeySize/binary, Value/binary>> = Bin,
     Resp#response{
@@ -252,5 +321,13 @@ recv_bytes(_, 0) -> <<>>;
 recv_bytes(Socket, NumBytes) ->
     case gen_tcp:recv(Socket, NumBytes) of
         {ok, Bin} -> Bin;
-        {error, closed} -> exit({error, memcached_connection_closed})
+        Err -> Err
     end.
+
+read_pipelined(Socket, StopOp, Acc) ->
+  case recv(Socket) of
+    {error, Err} -> {error, Err};
+    #response{op_code = StopOp} -> lists:reverse(Acc);
+    #response{key=Key, value=Value} -> read_pipelined(Socket, StopOp, [{binary_to_list(Key), Value} | Acc])
+	end.
+  

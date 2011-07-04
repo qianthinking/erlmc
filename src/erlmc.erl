@@ -87,19 +87,23 @@ remove_connection(Host, Port) ->
 	ok.
 	
 get(Key0) ->
+  get(Key0, ?TIMEOUT).
+
+get(Key0, Timeout) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {get, Key}, ?TIMEOUT).
+  call(map_key(Key), {get, Key}, Timeout).
 
 get_many(Keys) ->
 	Self = self(),
+  SplitKeys = split_keys(Keys),
 	Pids = [spawn(fun() -> 
-		Res = (catch ?MODULE:get(Key)),
-		Self ! {self(), {Key, Res}}
-	 end) || Key <- Keys],
-	lists:reverse(lists:foldl(
+		Res = (catch call(unique_connection(Host, Port, NC), {get_many, SubKeys}, ?TIMEOUT)),
+		Self ! {self(), Res}
+	 end) || {{{Host, Port}, NC}, SubKeys} <- SplitKeys],
+	lists:append(lists:foldl(
 		fun(Pid, Acc) ->
 			receive
-				{Pid, {Key, Res}} -> [{Key, Res}|Acc]
+				{Pid, Res} -> [Res | Acc]
 			after ?TIMEOUT ->
 				Acc
 			end
@@ -110,21 +114,21 @@ add(Key, Value) ->
 	
 add(Key0, Value, Expiration) when is_binary(Value), is_integer(Expiration) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {add, Key, Value, Expiration}, ?TIMEOUT).
+    call(map_key(Key), {add, Key, Value, Expiration}, ?TIMEOUT).
 
 set(Key, Value) ->
 	set(Key, Value, 0).
 	
 set(Key0, Value, Expiration) when is_binary(Value), is_integer(Expiration) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {set, Key, Value, Expiration}, ?TIMEOUT).
-
+    call(map_key(Key), {set, Key, Value, Expiration}, ?TIMEOUT).
+    
 replace(Key, Value) ->
 	replace(Key, Value, 0).
 	
 replace(Key0, Value, Expiration) when is_binary(Value), is_integer(Expiration) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {replace, Key, Value, Expiration}, ?TIMEOUT).
+    call(map_key(Key), {replace, Key, Value, Expiration}, ?TIMEOUT).
     
 check_and_replace(Key, OldValue, NewValue) ->
 	check_and_replace(Key, OldValue, NewValue, 0).
@@ -135,23 +139,23 @@ check_and_replace(Key0, OldValue, NewValue, Expiration) when is_binary(OldValue)
 
 delete(Key0) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {delete, Key}, ?TIMEOUT).
+    call(map_key(Key), {delete, Key}, ?TIMEOUT).
 
-increment(Key0, Value, Initial, Expiration) when is_binary(Value), is_binary(Initial), is_integer(Expiration) ->
+increment(Key0, Value, Initial, Expiration) when is_integer(Value), is_integer(Initial), is_integer(Expiration) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {increment, Key, Value, Initial, Expiration}, ?TIMEOUT).
+    call(map_key(Key), {increment, Key, Value, Initial, Expiration}, ?TIMEOUT).
 
-decrement(Key0, Value, Initial, Expiration) when is_binary(Value), is_binary(Initial), is_integer(Expiration) ->
+decrement(Key0, Value, Initial, Expiration) when is_integer(Value), is_integer(Initial), is_integer(Expiration) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {decrement, Key, Value, Initial, Expiration}, ?TIMEOUT).
+    call(map_key(Key), {decrement, Key, Value, Initial, Expiration}, ?TIMEOUT).
 
 append(Key0, Value) when is_binary(Value) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {append, Key, Value}, ?TIMEOUT).
+    call(map_key(Key), {append, Key, Value}, ?TIMEOUT).
 
 prepend(Key0, Value) when is_binary(Value) ->
 	Key = package_key(Key0),
-    gen_server:call(map_key(Key), {prepend, Key, Value}, ?TIMEOUT).
+    call(map_key(Key), {prepend, Key, Value}, ?TIMEOUT).
 
 stats() ->
 	multi_call(stats).
@@ -197,6 +201,11 @@ host_port_call(Host, Port, Msg) ->
     Pid = unique_connection(Host, Port),
     gen_server:call(Pid, Msg, ?TIMEOUT).
 
+call(Pid, Msg, Timeout) ->
+	case gen_server:call(Pid, Msg, Timeout) of
+		{error, Error} -> exit({erlmc, Error});
+		Resp -> Resp
+	end.
 	
 %%--------------------------------------------------------------------
 %%% Stateful loop
@@ -223,18 +232,18 @@ loop() ->
 	receive
 		{add_server, Host, Port, ConnPoolSize} ->
 			add_server_to_continuum(Host, Port),
-            [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize)];
-        {refresh_server, Host, Port, ConnPoolSize} ->
-            % adding to continuum is idempotent
-            add_server_to_continuum(Host, Port),
-            % add only necessary connections to reach pool size
-            LiveConnections = revalidate_connections(Host, Port),
-            if
-                LiveConnections < ConnPoolSize ->
-                    [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize - LiveConnections)];
-                true ->
-                    ok
-            end;
+      revalidate_connections(Host, Port),
+      [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize)];
+    {refresh_server, Host, Port, ConnPoolSize} ->
+      % adding to continuum is idempotent
+      add_server_to_continuum(Host, Port),
+      % add only necessary connections to reach pool size
+      LiveConnections = revalidate_connections(Host, Port),
+      if LiveConnections < ConnPoolSize ->
+         [start_connection(Host, Port) || _ <- lists:seq(1, ConnPoolSize - LiveConnections)];
+      true ->
+         ok
+      end;
 		{remove_server, Host, Port} ->
 			[(catch gen_server:call(Pid, quit, ?TIMEOUT)) || [Pid] <- ets:match(erlmc_connections, {{Host, Port}, '$1'})],
 			remove_server_from_continuum(Host, Port);
@@ -249,6 +258,7 @@ loop() ->
 			case ets:match(erlmc_connections, {'$1', Pid}) of
 				[[{Host, Port}]] -> 
 					ets:delete_object(erlmc_connections, {{Host, Port}, Pid}),
+          update_connections_for_server(Host, Port, {3, -1, 0, 0}),
 					case Err of
 						shutdown -> ok;
 						_ -> start_connection(Host, Port)
@@ -261,22 +271,43 @@ loop() ->
 	
 start_connection(Host, Port) ->
 	case erlmc_conn:start_link([Host, Port]) of
-		{ok, Pid} -> ets:insert(erlmc_connections, {{Host, Port}, Pid});
+		{ok, Pid} -> 
+      ets:insert(erlmc_connections, {{Host, Port}, Pid}),
+      update_connections_for_server(Host, Port, {3, 1});
 		_ -> ok
 	end.
 
 revalidate_connections(Host, Port) ->
     [(catch gen_server:call(Pid, version, ?TIMEOUT)) || [Pid] <- ets:match(erlmc_connections, {{Host, Port}, '$1'})],
-    length(ets:match(erlmc_connections, {{Host, Port}, '$1'})).
+    LiveConnections = length(ets:match(erlmc_connections, {{Host, Port}, '$1'})),
+    set_connections_for_server(Host, Port, LiveConnections),
+    LiveConnections.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 add_server_to_continuum(Host, Port) ->
-	[ets:insert(erlmc_continuum, {hash_to_uint(Host ++ integer_to_list(Port) ++ integer_to_list(I)), {Host, Port}}) || I <- lists:seq(1, 100)].
+	[ets:insert(erlmc_continuum, {hash_to_uint(Host ++ integer_to_list(Port) ++ integer_to_list(I)), {Host, Port}, 0}) || 
+    I <- lists:seq(1, 100)].
+
+update_connections_for_server(Host, Port, UpdateOpr) ->
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
+		[] -> 
+			ok;
+		List ->
+			[ets:update_counter(erlmc_continuum, Key, UpdateOpr) || [Key] <- List]
+	end.
+
+set_connections_for_server(Host, Port, Val) ->
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
+		[] -> 
+			ok;
+		List ->
+			[ets:update_element(erlmc_continuum, Key, {3, Val}) || [Key] <- List]
+	end.
 
 remove_server_from_continuum(Host, Port) ->
-	case ets:match(erlmc_continuum, {'$1', {Host, Port}}) of
+	case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
 		[] -> 
 			ok;
 		List ->
@@ -284,7 +315,7 @@ remove_server_from_continuum(Host, Port) ->
 	end.
 
 is_server_in_continuum(Host, Port) ->
-    case ets:match(erlmc_continuum, {'$1', {Host, Port}}) of
+    case ets:match(erlmc_continuum, {'$1', {Host, Port}, '_'}) of
         [] -> 
             false;
         _ ->
@@ -310,12 +341,15 @@ unique_connections() ->
 		end, dict:new(), ets:tab2list(erlmc_connections))).
 
 unique_connection(Host, Port) ->
-    case ets:lookup(erlmc_connections, {Host, Port}) of
-        [] -> exit({error, {connection_not_found, {Host, Port}}});
-        Pids ->
-            {_, Pid} = lists:nth(random:uniform(length(Pids)), Pids),
-            Pid
-    end.
+  case ets:lookup(erlmc_connections, {Host, Port}) of
+    [] -> exit({erlmc, {connection_not_found, {Host, Port}}});
+    Pids ->
+      unique_connection(Host, Port, length(Pids))
+  end.
+unique_connection(Host, Port, RandBase) ->
+  TRand = crypto:rand_uniform(1, RandBase),
+  {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand),
+  Pid.
 
 %% Consistent hashing functions
 %%
@@ -331,27 +365,34 @@ hash_to_uint(Key) when is_list(Key) ->
 %%		 Key = string()
 %%		 Conn = pid()
 map_key(Key) when is_list(Key) ->
-	First = ets:first(erlmc_continuum),
-    {Host, Port} = 
-		case find_next_largest(hash_to_uint(Key), First) of
-			undefined ->
-				case First of
-					'$end_of_table' -> exit(erlmc_continuum_empty);
-					_ ->
-						[{_, Value}] = ets:lookup(erlmc_continuum, First),
-						Value
-				end;
-			Value -> Value
+    {{Host, Port}, NumConnections} = 
+		case find_next_largest(hash_to_uint(Key)) of
+	    '$end_of_table' -> exit(erlmc_continuum_empty);
+			KeyIndex ->
+			  [{_, Value, NC}] = ets:lookup(erlmc_continuum, KeyIndex),
+				{Value, NC}
 		end,
-	unique_connection(Host, Port).
+	unique_connection(Host, Port, NumConnections).
     
-%% @todo: use sorting algorithm to find next largest
-find_next_largest(_, '$end_of_table') -> 
-	undefined;
+map_key_host(Key) when is_list(Key) ->
+  case find_next_largest(hash_to_uint(Key)) of
+    '$end_of_table' -> exit(erlmc_continuum_empty);
+    KeyIndex ->
+      [{_, Value, NC}] = ets:lookup(erlmc_continuum, KeyIndex),
+      {Value, NC}
+  end.
+    
+find_next_largest(Hash) -> 
+	case ets:select(erlmc_continuum, [{{'$1','_','_'},[{'>', '$1', Hash}],['$1']}], 1) of
+    '$end_of_table' -> ets:first(erlmc_continuum);
+    {[Key], _} -> Key
+  end.
 
-find_next_largest(Int, Key) when Key > Int ->
-	[{_, Val}] = ets:lookup(erlmc_continuum, Key),
-	Val;
-	
-find_next_largest(Int, Key) ->
-	find_next_largest(Int, ets:next(erlmc_continuum, Key)).
+split_keys(KeyList) -> split_keys(KeyList, []).
+split_keys([], SplitKeys) -> 
+  HKeys = proplists:get_keys(SplitKeys),
+  [{HKey, proplists:get_all_values(HKey, SplitKeys)} || HKey <- HKeys];
+split_keys([Key0|Rest], SplitKeys) -> 
+  Key = package_key(Key0),
+  split_keys(Rest, [{map_key_host(Key), Key} | SplitKeys]).
+
