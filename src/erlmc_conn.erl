@@ -78,11 +78,13 @@ handle_call({get, Key}, _From, Socket) ->
       end
 	end;
     
+handle_call({get_many, []}, _From, Socket) -> {reply, [], Socket};
 handle_call({get_many, Keys}, _From, Socket) ->
-  [send(Socket, #request{op_code=?OP_GetKQ, key=list_to_binary(Key)}) || Key <- Keys], 
-  send(Socket, #request{op_code=?OP_Noop}),
+  [LKey | RKeys] = Keys,
+  [send(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}) || Key <- RKeys], 
+  send(Socket, #request{op_code=?OP_GetK, key=list_to_binary(LKey)}),
 
-  case read_pipelined(Socket, ?OP_Noop, []) of
+  case read_pipelined(Socket, list_to_binary(LKey), []) of
     {error, Err} -> {stop, Err, {error, Err}, Socket};
     Resp -> 
       {reply, Resp, Socket}
@@ -312,10 +314,12 @@ recv_bytes(Socket, NumBytes) ->
         Err -> Err
     end.
 
-read_pipelined(Socket, StopOp, Acc) ->
+read_pipelined(Socket, LastKey, Acc) ->
   case recv(Socket) of
     {error, Err} -> {error, Err};
-    #response{op_code = StopOp} -> lists:reverse(Acc);
-    #response{key=Key, value=Value} -> read_pipelined(Socket, StopOp, [{binary_to_list(Key), Value} | Acc])
+    #response{key=LastKey, value= <<>>} -> Acc;
+    #response{key=LastKey, value=Value} -> [{binary_to_list(LastKey), Value} | Acc];
+    #response{key=_, value= <<>>} -> read_pipelined(Socket, LastKey, Acc);
+    #response{key=Key, value=Value} -> read_pipelined(Socket, LastKey, [{binary_to_list(Key), Value} | Acc])
 	end.
   
