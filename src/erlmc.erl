@@ -328,8 +328,16 @@ unique_connection(Host, Port) ->
   end.
 unique_connection(Host, Port, RandBase) ->
   TRand = crypto:rand_uniform(1, RandBase),
-  {[[Pid]|_],_} = ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand),
-  Pid.
+  case ets:select(erlmc_connections, [{{{Host, Port}, '$1'},[],['$$']}], TRand) of
+    {[[Pid]|_],_} -> Pid;
+    '$end_of_table' ->
+      % could not find the host in the connections list
+      error_logger:info_msg("Removing ~p from pool - no connection found for index ~p ~n", [{Host, Port}, TRand]),
+      remove_server(Host, Port),
+      exit({erlmc, {connection_not_found, {Host, Port}}});
+    _ ->  
+      exit({erlmc, {connection_not_found, {Host, Port}}})
+  end.
 
 %% Consistent hashing functions
 %%
