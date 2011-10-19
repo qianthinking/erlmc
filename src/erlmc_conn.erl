@@ -78,8 +78,9 @@ handle_call({get, Key}, _From, Socket) ->
       end
 	end;
     
+handle_call({get_many, []}, _From, Socket) -> {reply, [], Socket};
 handle_call({get_many, Keys}, _From, Socket) ->
-  [send(Socket, #request{op_code=?OP_GetKQ, key=list_to_binary(Key)}) || Key <- Keys], 
+  [send(Socket, #request{op_code=?OP_GetK, key=list_to_binary(Key)}) || Key <- Keys], 
   send(Socket, #request{op_code=?OP_Noop}),
 
   case read_pipelined(Socket, ?OP_Noop, []) of
@@ -327,7 +328,8 @@ recv_bytes(Socket, NumBytes) ->
 read_pipelined(Socket, StopOp, Acc) ->
   case recv(Socket) of
     {error, Err} -> {error, Err};
-    #response{op_code = StopOp} -> lists:reverse(Acc);
+    #response{op_code = StopOp} -> Acc;
+    #response{key=_, value= <<>>} -> read_pipelined(Socket, StopOp, Acc);
     #response{key=Key, value=Value} -> read_pipelined(Socket, StopOp, [{binary_to_list(Key), Value} | Acc])
 	end.
   
